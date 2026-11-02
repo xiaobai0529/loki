@@ -2087,3 +2087,29 @@ func TestInstance_PolicyStreamLimitBuckets(t *testing.T) {
 		})
 	}
 }
+
+
+func TestInstance_PushUsesCanonicalStreamKey(t *testing.T) {
+	inst := newEmptyInstance(t)
+	const inputLabels = `{app="loki",job="test"}`
+	const canonicalLabels = `{app="loki", job="test"}`
+
+	for i := range 2 {
+		err := inst.Push(context.Background(), &logproto.PushRequest{
+			Streams: []logproto.Stream{{
+				Labels: inputLabels,
+				Entries: []logproto.Entry{{
+					Timestamp: time.Unix(0, int64(i)),
+					Line:      "line",
+				}},
+			}},
+		})
+		require.NoError(t, err)
+	}
+
+	require.Equal(t, 1, inst.streams.Len())
+	stream, found := inst.streams.Load(canonicalLabels)
+	require.True(t, found)
+	inst.removeStream(stream)
+	require.Zero(t, inst.streams.Len())
+}
