@@ -5,6 +5,8 @@ import (
 
 	"github.com/prometheus/common/model"
 	"go.uber.org/atomic"
+
+	"github.com/grafana/loki/v3/pkg/logql/syntax"
 )
 
 type streamsMap struct {
@@ -35,12 +37,12 @@ func (m *streamsMap) LoadByFP(fp model.Fingerprint) (*stream, bool) {
 
 // Store must be called inside WithLock
 func (m *streamsMap) Store(key string, s *stream) {
-	m.store(key, s)
+	m.store(s)
 }
 
 // StoreByFP must be called inside WithLock
 func (m *streamsMap) StoreByFP(fp model.Fingerprint, s *stream) {
-	m.store(fp, s)
+	m.store(s)
 }
 
 // Delete must be called inside WithLock
@@ -56,6 +58,21 @@ func (m *streamsMap) Delete(s *stream) bool {
 
 // LoadOrStoreNew already has lock inside, do NOT call inside WithLock or WithRLock
 func (m *streamsMap) LoadOrStoreNew(key string, newStreamFn func() (*stream, error), postLoadFn func(*stream) error) (*stream, bool, error) {
+	var s *stream
+	var loaded bool
+	var err error
+	m.WithRLock(func() {
+		if s, loaded = m.load(m.streams, key); loaded && postLoadFn != nil {
+			err = postLoadFn(s)
+		}
+	})
+	if loaded {
+		return s, true, err
+	}
+
+	if labels, parseErr := syntax.ParseLabels(key); parseErr == nil {
+		key = labels.String()
+	}
 	return m.loadOrStoreNew(m.streams, key, newStreamFn, postLoadFn)
 }
 
@@ -101,12 +118,8 @@ func (m *streamsMap) load(mp *sync.Map, key interface{}) (*stream, bool) {
 	return nil, false
 }
 
-func (m *streamsMap) store(key interface{}, s *stream) {
-	if labelsString, ok := key.(string); ok {
-		m.streams.Store(labelsString, s)
-	} else {
-		m.streams.Store(s.labelsString, s)
-	}
+func (m *streamsMap) store(s *stream) {
+	m.streams.Store(s.labelsString, s)
 	m.streamsByFP.Store(s.fp, s)
 	m.streamsCounter.Inc()
 }
@@ -142,7 +155,7 @@ func (m *streamsMap) loadOrStoreNew(mp *sync.Map, key interface{}, newStreamFn f
 		if err != nil {
 			return
 		}
-		m.store(key, s)
+		m.store(s)
 	})
 
 	return s, loaded, err
