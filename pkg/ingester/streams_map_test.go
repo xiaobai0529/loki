@@ -131,3 +131,54 @@ func TestStreamsMap(t *testing.T) {
 
 	require.Equal(t, len(ss), streams.Len())
 }
+
+
+func TestStreamsMap_LoadOrStoreNewNormalizesLabels(t *testing.T) {
+	limits, err := validation.NewOverrides(defaultLimitsTestConfig(), nil)
+	require.NoError(t, err)
+	limiter := NewLimiter(limits, NilMetrics, newIngesterRingLimiterStrategy(&ringCountMock{count: 1}, 1), &TenantBasedStrategy{limits: limits})
+	retentionHours := util.RetentionHours(limiter.limits.RetentionPeriod("fake"))
+	chunkfmt, headfmt := defaultChunkFormat(t)
+	testStream := newStream(
+		chunkfmt,
+		headfmt,
+		defaultConfig(),
+		limiter.rateLimitStrategy,
+		"fake",
+		model.Fingerprint(1),
+		labels.FromStrings("app", "loki", "job", "test"),
+		NewStreamRateCalculator(),
+		NilMetrics,
+		nil,
+		nil,
+		retentionHours,
+		noPolicy,
+	)
+
+	for _, input := range []string{
+		`{app="loki",job="test"}`,
+		`{job="test", app="loki"}`,
+		`{app="loki", job="test", ignored=""}`,
+	} {
+		t.Run(input, func(t *testing.T) {
+			streams := newStreamsMap()
+			newStreamFn := func() (*stream, error) {
+				return testStream, nil
+			}
+
+			first, loaded, err := streams.LoadOrStoreNew(input, newStreamFn, nil)
+			require.NoError(t, err)
+			require.False(t, loaded)
+			require.Same(t, testStream, first)
+
+			second, loaded, err := streams.LoadOrStoreNew(input, newStreamFn, nil)
+			require.NoError(t, err)
+			require.True(t, loaded)
+			require.Same(t, first, second)
+
+			require.Equal(t, 1, streams.Len())
+			require.True(t, streams.Delete(testStream))
+			require.Equal(t, 0, streams.Len())
+		})
+	}
+}
